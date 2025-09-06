@@ -1,0 +1,45 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (locais)
+venv/
+env/
+.venv/
+
+# Arquivos de ambiente / segredos
+.env
+.env.*           # .env.local, .env.prod etc.
+
+# Arquivos gerados / dados temporários
+extracted_*.json
+filtered_*.json
+run_state.json
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+
+# Jupyter
+.ipynb_checkpoints
+
+# Misc
+pip-selfcheck.json
