@@ -130,3 +130,31 @@ def append_post_to_page(post_data):
     except notion_client.errors.APIResponseError as e:
         print(f"!!! ERRO ao anexar blocos ao Notion: {e}")
 
+# --- Função de Envio de Notificação Simples ---
+def send_notification_to_notion(message_text, add_divider=True):
+    print(f" N-> Enviando notificação para o Notion: '{message_text[:50]}...'")
+
+    notification_blocks = [
+        {
+            "type": "callout",
+            "callout": {
+                "rich_text": [{
+                    "type": "text",
+                    "text": {"content": message_text}
+                }],
+                "icon": {"emoji": "ℹ️"} # Ícone de informação
+            }
+        }
+    ]
+
+    if add_divider:
+        notification_blocks.append({"type": "divider", "divider": {}})
+
+    try:
+        notion.blocks.children.append(
+            block_id=NOTION_PAGE_ID,
+            children=notification_blocks
+        )
+        print(" N-> Notificação enviada com sucesso ao Notion.")
+    except notion_client.errors.APIResponseError as e:
+        print(f"!!! ERRO ao enviar notificação ao Notion: {e}")

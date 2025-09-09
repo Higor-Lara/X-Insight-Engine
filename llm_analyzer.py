@@ -10,31 +10,24 @@ def clean_llm_response(response_text):
     return None
 
 # --- MUDANÇA 1: Atualize a assinatura da função para aceitar 'knowledge_base' ---
-def is_post_related(post_text, topic, knowledge_base, llm_model='phi3:mini', max_retries=5):
+def is_post_related(post_text, topic, llm_model='llama3:8b', max_retries=5):
     """
     Usa o Ollama e o LLM para verificar se um post está relacionado a um tópico,
     usando uma base de conhecimento fornecida.
     """
     
     # --- MUDANÇA 2: Novo prompt estruturado ---
-    prompt = f"""You are an expert AI analyst specializing in cryptocurrency market intelligence.
-Your task is to analyze the 'Post Text' provided below and determine if it matches the 'Specific Task Objective', using the 'Knowledge Base' as your reference guide.
-
---- BEGIN KNOWLEDGE BASE ---
-{knowledge_base}
---- END KNOWLEDGE BASE ---
-
---- TASK DEFINITION ---
-Specific Task Objective: {topic}
+    prompt = f"""
+{topic}
 
 --- POST TEXT TO ANALYZE ---
 {post_text}
----
+--- END OF POST TEXT TO ANALYZE ---
 
-**CRITICAL INSTRUCTION: Analyze a post's potential. If the text is ambiguous but could plausibly be related to the topic, default to 'yes'. Only return 'no' if you are certain the post is unrelated (e.g., clearly spam, different topic, or non-sensical content).**
-
-Respond ONLY with the word 'yes' or 'no'.
-Your Answer (yes/no):"""
+**CRITICAL INSTRUCTIONS FOR ANALYSIS:**
+All answers must always be ONLY “yes” or “no”.
+If it is not possible to understand the meaning of what is written, if the post contains no text, or if the text is ambiguous, the default answer to be returned must be “yes”.
+Your Answer:"""
 
     for attempt in range(max_retries):
         # Simplificando o print do log para não poluir o terminal com o tópico inteiro,

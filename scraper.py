@@ -9,7 +9,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from llm_analyzer import is_post_related
-from notion_handler import append_post_to_page
+from notion_handler import append_post_to_page, send_notification_to_notion
 
 STATE_FILE = "run_state.json"
 
@@ -263,36 +263,27 @@ if __name__ == "__main__":
         json.dump(all_final_data, f, ensure_ascii=False, indent=4)
     print(f"\nExtração concluída! {len(all_final_data)} posts/threads únicos salvos em '{output_filename}'.")
     
-    if all_final_data:
-        save_latest_timestamp(all_final_data)
-
     # ETAPA 3: ANÁLISE COM LLM
     if all_final_data:
+        save_latest_timestamp(all_final_data)
         print("\n" + "="*50)
         print("INICIANDO A ANÁLISE COM O PHI-3")
         print("="*50)
-        knowledge_base = """Core Concept (Root Definition): An "airdrop" is a marketing strategy involving the free distribution of cryptocurrency tokens or NFTs to a large number of digital wallets. The goal is to generate awareness and encourage initial use. The golden rule is that the recipient generally does not pay for the tokens, although they might perform actions or pay minimum gas fees to claim them. Common types include: Standard, Bounty/Task-Based, Holder/Ownership-Based, Exclusive, Retroactive, and Raffle/Lottery.
 
-        Essential Identification Topics:
+        
+        task_description = """Your task is to analyze social media posts. All the posts I will send come from profiles of cryptocurrency projects I am monitoring.
+I am an airdrop hunter, and I want to stay informed about the airdrop aspects of the projects I am farming. You will help me with this.
 
-        Topic A: Eligibility and Participation (Who qualifies?): This involves identifying how users become eligible. Keywords include:
-        1. General Qualification Terms: Eligible, qualified, eligibility criteria, Whitelist, Allocation.
-        2. Ownership-Based Methods: Snapshot, Holders, Stakers, NFT Holders, Minimum balance.
-        3. Action and Engagement-Based Methods: Early users, Testnet users, Liquidity Providers (LPs), Bridge users, Trading volume, Transaction count.
-        4. Gamification and Task-Based Methods: Points system, Campaign, Tasks, Galxe, Zealy, Layer3, Leaderboard, Ranking.
-        5. Identity and Registration-Based Methods: Registration form, KYC, Discord Role.
+Whenever you analyze a post, check if it has any direct or indirect relation to airdrops or if it contains information that could benefit or harm my chances of receiving an airdrop.
 
-        Topic B: Purpose and Motivation (Why is it happening?): The reason for the distribution. Keywords include: Promotion, community growth, token distribution, governance, reward, incentive, liquidity bootstrapping, decentralize governance.
+I want to highlight that many airdrops today use gamified campaigns, often employing different terms and words to refer to these campaigns. Take this into account.
 
-        Topic C: Claim Process (How to get the tokens?): The action of collecting the tokens post-eligibility. Keywords include: Claim, Connect wallet, Official website, claim portal, Distribution date, TGE (Token Generation Event), Vesting, vesting schedules, Penalties for early claims.
+To decide, follow this rule:
+If I were farming an airdrop from this project, would this post be relevant?
 
-        Topic D: Risks and Security Alerts (Negative context): Warnings related to airdrops. Keywords include: Scam, Phishing, Never share your private key/seed phrase, Wallet drainer, Fake airdrop, Pump-and-dump, Rug pull, Dusting scam, Low liquidity. Tax implications include: Taxable income, fair market value (FMV).
+If yes, respond only "yes".
 
-        Identification Logic Summary (Decision Rule): To classify a text as about "airdrop," check if the term "airdrop" is explicit. If not, look for a combination of keywords from Topics A, B, or C (e.g., "free token distribution" for "holders" who need to "claim" on a website, possibly with "vesting"). The mention of risks (Topic D) combined with eligibility terms (Topic A) is a strong positive indicator.
-        Identification Scenario Example: Input Text: "Attention, anyone who used platform X before August! Check if your wallet is eligible to claim the new governance tokens. The snapshot has already been taken." Analysis: Presence of "eligible," "claim," "governance tokens," and "snapshot." Conclusion: The subject is Airdrop.
-
-        Evolution and Trends in Airdrops (2025): Airdrops evolved into gamified strategies with seasons and points systems. Retroactive airdrops reward past actions without prior announcement. Vesting (gradual release over 3-48 months) is common to prevent immediate dumps but faces criticism. Penalties for early claims also emerge to force retention. Tax implications are significant; for example, in the US, airdrops are taxable income based on Fair Market Value when control is established, requiring proper reporting to avoid penalties."""
-        task_description = "Identify if the post's main topic is related to a cryptocurrency airdrop."
+If no, respond only "no"."""
 
         filtered_posts = []
         for post in all_final_data:
@@ -300,7 +291,7 @@ if __name__ == "__main__":
             full_text = "\n\n---\n\n".join([part['text'] for part in post.get('content', []) if part.get('text')])
             
             print(f"\nAnalisando post: {post['link']}")
-            if is_post_related(full_text, task_description, knowledge_base):
+            if is_post_related(full_text, task_description):
                 print("    > Veredito: Relevante. Adicionando ao resultado final.")
                 filtered_posts.append(post)
             else:
@@ -324,5 +315,22 @@ if __name__ == "__main__":
             print("ENVIO PARA O NOTION CONCLUÍDO!")
         else:
             print("\nNenhum post relevante para enviar ao Notion.")
+
+            total_posts_found = len(all_final_data)
+            timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+            notification_message = (
+                f"Relatório de Execução ({timestamp}):\n"
+                f"Total de tweets que batem com a data: {total_posts_found} \n"
+                f"Nenhum desses posts se enquadram no assunto."
+            )
+            send_notification_to_notion(notification_message)
+
     else:
         print("\nNenhum post novo coletado, etapa de análise pulada.")
+        total_posts_found = len(all_final_data)
+        timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+        notification_message = (
+            f"Relatório de Execução ({timestamp}):\n"
+            f"Nenhum tweet novo foi encontrado. \n"
+        )
+        send_notification_to_notion(notification_message)
