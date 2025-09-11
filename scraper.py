@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-from llm_analyzer import is_post_related
+from gemini_analyzer import is_post_related
 from notion_handler import append_post_to_page, send_notification_to_notion
 
 STATE_FILE = "run_state.json"
@@ -267,36 +267,92 @@ if __name__ == "__main__":
     if all_final_data:
         save_latest_timestamp(all_final_data)
         print("\n" + "="*50)
-        print("INICIANDO A ANÁLISE COM O PHI-3")
+        print("INICIANDO A ANÁLISE COM A API DO GEMINI")
         print("="*50)
 
         
-        task_description = """Your task is to analyze social media posts. All the posts I will send come from profiles of cryptocurrency projects I am monitoring.
-I am an airdrop hunter, and I want to stay informed about the airdrop aspects of the projects I am farming. You will help me with this.
+        task_description = """
+**1. Your Role and Objective:**
+You are an expert analyst monitoring cryptocurrency projects for airdrop opportunities. Your task is to analyze the following social media post.
+Your goal is to determine if the post contains information relevant to an "airdrop hunter" monitoring this project.
 
-Whenever you analyze a post, check if it has any direct or indirect relation to airdrops or if it contains information that could benefit or harm my chances of receiving an airdrop.
+**2. Core Rules:**
+- Analyze the post and answer the question: "If I were farming an airdrop from this project, would this post be relevant to me?"
+- **Your entire response MUST be a single word: 'yes' or 'no'. Do not include any other text, reasoning, or explanation.**
 
-I want to highlight that many airdrops today use gamified campaigns, often employing different terms and words to refer to these campaigns. Take this into account.
+**3. Relevance Criteria (Triggers for "yes"):**
+- Direct mention of "airdrop", rewards, token distribution, or "snapshot".
+- Gamified campaigns: mentions of "points", "badges", NFTs for participation, or tasks on platforms like Galxe, Zealy, Layer3.
+- Testnet phases: announcements of new testnets where participation might be rewarded.
+- Funding news: announcements of new investment rounds (fundraising), as these often lead to future community rewards.
 
-To decide, follow this rule:
-If I were farming an airdrop from this project, would this post be relevant?
+**4. Irrelevance Criteria (Triggers for "no"):**
+- General market discussions or price speculation.
+- Standard partnerships or technical updates without direct user rewards.
+- Generic community engagement posts ("GM", "happy Monday", contests for swag).
 
-If yes, respond only "yes".
+**5. Training Examples (Few-Shot Learning):**
 
-If no, respond only "no"."""
+--- START EXAMPLE 1 ---
+Post Input: "Big news! We just closed our Series B funding round with major VCs. Thanks to our amazing community for the support as we build the future of DeFi."
+Final Answer: yes
+--- END EXAMPLE 1 ---
+
+--- START EXAMPLE 2 ---
+Post Input: "Don't forget to claim your 'Early Supporter Badge' on Galxe! This recognizes everyone who joined us in Phase 1."
+Final Answer: yes
+--- END EXAMPLE 2 ---
+
+--- START EXAMPLE 3 ---
+Post Input: "Our dev team just pushed update 1.4.2, fixing minor UI bugs on the platform. Great work team!"
+Final Answer: no
+--- END EXAMPLE 3 ---
+"""
 
         filtered_posts = []
-        for post in all_final_data:
-            # ATUALIZAÇÃO: Reconstrói o texto a partir da nova estrutura de dados
+    
+        # --- NOVO: LÓGICA DE CONTROLE DE FREQUÊNCIA (THROTTLING) ---
+        # Usamos 9 como limite para ter uma margem de segurança.
+        REQUEST_LIMIT_PER_MINUTE = 9 
+        request_count = 0
+        minute_start_time = time.time()
+        # --- FIM DA NOVA LÓGICA ---
+
+        for i, post in enumerate(all_final_data):
+            # --- NOVO: VERIFICAÇÃO DO LIMITE ANTES DE CADA CHAMADA ---
+            if request_count >= REQUEST_LIMIT_PER_MINUTE:
+                elapsed_time = time.time() - minute_start_time
+                if elapsed_time < 60:
+                    wait_time = 60 - elapsed_time
+                    print("\n" + "-"*20)
+                    print(f"!!! LIMITE DE RPM ATINGIDO. AGUARDANDO {wait_time:.1f} SEGUNDOS... !!!")
+                    print("-" * 20 + "\n")
+                    time.sleep(wait_time)
+                
+                # Zera o contador para o novo minuto
+                request_count = 0
+                minute_start_time = time.time()
+            # --- FIM DA VERIFICAÇÃO ---
+
             full_text = "\n\n---\n\n".join([part['text'] for part in post.get('content', []) if part.get('text')])
             
-            print(f"\nAnalisando post: {post['link']}")
+            if not full_text.strip():
+                continue
+
+            print(f"\n({i+1}/{len(all_final_data)}) Analisando post: {post.get('link', 'Link não disponível')}")
+            
             if is_post_related(full_text, task_description):
-                print("    > Veredito: Relevante. Adicionando ao resultado final.")
+                print("   > Veredito: Relevante. Adicionando ao resultado final.")
                 filtered_posts.append(post)
             else:
-                print("    > Veredito: Não relevante. Ignorando.")
-        
+                print("   > Veredito: Não relevante. Ignorando.")
+            
+            # --- NOVO: INCREMENTA O CONTADOR APÓS CADA CHAMADA BEM-SUCEDIDA ---
+            request_count += 1
+            # --- FIM DO INCREMENTO ---
+
+        # ... (o resto do seu código para salvar o JSON e enviar para o Notion continua igual) ...
+
         filtered_output_filename = "filtered_posts.json"
         with open(filtered_output_filename, 'w', encoding='utf-8') as f:
             json.dump(filtered_posts, f, ensure_ascii=False, indent=4)
