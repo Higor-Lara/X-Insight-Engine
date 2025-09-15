@@ -5,7 +5,6 @@ cd /d "C:\Projetos\X-Insight-Engine"
 REM Ativa o ambiente virtual
 call "venv\Scripts\activate.bat"
 
-REM Executa o script Python
-echo Iniciando o scraper...
-python scraper_logic.py
-echo Scraper finalizado.
+REM Executa o aplicativo Streamlit
+echo Iniciando o Streamlit...
+streamlit run app.py

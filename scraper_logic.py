@@ -3,6 +3,7 @@ import random
 import re
 import time
 from datetime import datetime, timezone, timedelta
+from contextlib import redirect_stdout
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -10,10 +11,12 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from gemini_analyzer import is_post_related
 from notion_handler import append_post_to_page, send_notification_to_notion
+from utils import load_config, save_config, LOG_FILE, load_profiles
 
+# --- Constantes ---
 STATE_FILE = "run_state.json"
 
-# --- Funções de Estado ---
+# --- Funções de Estado (sem alterações) ---
 def load_last_run_timestamp():
     """Carrega o timestamp da última execução."""
     try:
@@ -39,13 +42,11 @@ def save_latest_timestamp(posts):
         json.dump(state_data, f, indent=4)
     print(f"Estado salvo. A próxima execução começará a partir de: {latest_timestamp}")
 
-# --- Funções de Scraping e Extração ---
+# --- Funções de Scraping e Extração (sem alterações na lógica interna) ---
 def get_nitter_profile_url(username, nitter_instance):
-    """Gera a URL de um perfil do X no Nitter."""
     return f"{nitter_instance}/{username}"
 
 def parse_nitter_datetime(dt_string):
-    """Converte a string de data/hora do Nitter para um objeto datetime."""
     formats = ["%b %d, %Y · %I:%M %p %Z", "%b %d, %Y · %H:%M %Z"]
     for fmt in formats:
         try:
@@ -58,7 +59,6 @@ def parse_nitter_datetime(dt_string):
     raise ValueError(f"Não foi possível analisar a data/hora: {dt_string}")
 
 def extract_initial_post_data(post_container, base_url):
-    """Extrai os dados iniciais (link e data) da página de perfil."""
     link_tag = post_container.find('a', class_='tweet-link')
     post_link = base_url + link_tag['href'] if link_tag else None
     time_tag = post_container.find('span', class_='tweet-date')
@@ -72,7 +72,6 @@ def extract_initial_post_data(post_container, base_url):
     return {"link": post_link, "datetime": post_datetime}
 
 def find_posts_on_profile_page(username, start_date, nitter_instance, driver):
-    """Navega pela página de perfil e retorna (sucesso, lista_de_links)."""
     profile_url = get_nitter_profile_url(username, nitter_instance)
     print(f"\nBuscando links de posts em: {profile_url}")
     try:
@@ -83,14 +82,11 @@ def find_posts_on_profile_page(username, start_date, nitter_instance, driver):
     except Exception as e:
         print(f"!!! Erro de conexão ao acessar {profile_url}: {e}")
         return False, []
-
     soup = BeautifulSoup(html_content, 'html.parser')
     posts_containers = soup.find_all('div', class_='timeline-item')
-
     if not posts_containers:
         print(f"-> AVISO: Nenhum post encontrado em {nitter_instance}. Instância considerada falha.")
         return False, []
-
     print(f"-> Encontrados {len(posts_containers)} posts na página de perfil.")
     links_to_process = []
     for container in posts_containers:
@@ -105,92 +101,67 @@ def find_posts_on_profile_page(username, start_date, nitter_instance, driver):
     return True, links_to_process
 
 def get_thread_root_url_and_content(post_url, driver, base_url):
-    """Encontra a URL raiz de uma thread e retorna o conteúdo da página."""
-    print(f"  -> Verificando URL: {post_url}")
+    print(f"   -> Verificando URL: {post_url}")
     try:
         driver.get(post_url)
         time.sleep(3)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
     except Exception as e:
-        print(f"  -> !!! Erro ao acessar a página do post: {e}")
+        print(f"   -> !!! Erro ao acessar a página do post: {e}")
         return None, None
     before_tweet_div = soup.find('div', class_='before-tweet')
     if before_tweet_div and before_tweet_div.find('a'):
         root_href = before_tweet_div.find('a')['href']
         root_url = base_url + root_href
-        print(f"  -> Post filho detectado. Navegando para a raiz da thread: {root_url}")
+        print(f"   -> Post filho detectado. Navegando para a raiz da thread: {root_url}")
         return get_thread_root_url_and_content(root_url, driver, base_url)
-    print(f"  -> Raiz da thread encontrada: {post_url}")
+    print(f"   -> Raiz da thread encontrada: {post_url}")
     return post_url, soup
 
-# --- NOVA FUNÇÃO PARA EXTRAIR CONTEÚDO DETALHADO (TEXTO E MÍDIA) ---
 def extract_detailed_post_content(timeline_item_div, base_url):
-    """Extrai texto e anexos (imagens/vídeos) de um único 'timeline-item'."""
     text_content = ""
     content_div = timeline_item_div.find('div', class_='tweet-content')
     if content_div:
         text_content = content_div.get_text(separator='\n', strip=True)
-
     attachments = []
     attachments_container = timeline_item_div.find('div', class_='attachments')
     if attachments_container:
-        # Encontra links de imagens (href em tags <a>)
         image_tags = attachments_container.select('.attachment a img')
         for tag in image_tags:
             if tag.has_attr('src'):
-                # Constrói a URL completa
                 attachments.append(base_url + tag['src'])
-        
-        # Encontra posters de vídeos (poster em tags <video>)
         video_tags = attachments_container.select('.attachment video')
         for tag in video_tags:
             if tag.has_attr('poster'):
                 attachments.append(base_url + tag['poster'])
+    return {"text": text_content, "attachments": list(set(attachments))}
 
-    return {"text": text_content, "attachments": list(set(attachments))} # Usa set() para remover duplicatas caso haja
-
-# --- FUNÇÃO ATUALIZADA PARA USAR A NOVA LÓGICA ---
 def extract_full_thread_content(soup, base_url):
-    """
-    Extrai o conteúdo completo (texto e anexos) de uma thread.
-    Retorna uma lista de dicionários, um para cada parte da thread.
-    """
     main_thread_container = soup.find('div', class_='main-thread')
     if not main_thread_container:
         return []
-
     content_parts = []
     main_tweet_div = main_thread_container.find('div', class_='main-tweet')
     if main_tweet_div:
-        # O main-tweet contém um timeline-item
         timeline_item = main_tweet_div.find('div', class_='timeline-item')
         if timeline_item:
             content_parts.append(extract_detailed_post_content(timeline_item, base_url))
-
     after_tweet_container = main_thread_container.find('div', class_='after-tweet')
     if after_tweet_container:
         continuation_posts = after_tweet_container.find_all('div', class_='timeline-item', recursive=False)
-        print(f"    -> Encontradas {len(continuation_posts)} continuações na thread.")
+        print(f"     -> Encontradas {len(continuation_posts)} continuações na thread.")
         for post in continuation_posts:
             content_parts.append(extract_detailed_post_content(post, base_url))
-            
     return content_parts
 
-# --- BLOCO PRINCIPAL ---
-if __name__ == "__main__":
-    usernames_to_scrape = ["NexusLabs", "GoKiteAI"]
+# --- Função Principal Refatorada ---
+def run_full_analysis(profiles_to_scan): # <-- MUDANÇA: O parâmetro agora é a lista de perfis com contexto
     start_collecting_from = load_last_run_timestamp()
     
     nitter_instances = [
-        "https://nitter.net",
-        "https://nitter.tiekoetter.com",
-        "https://nitter.privacyredirect.com",
-        "https://nuku.trabun.org",
+        "https://nitter.net", "https://nitter.tiekoetter.com",
+        "https://nitter.privacyredirect.com", "https://nuku.trabun.org",
     ]
-
-    all_posts_to_process = []
-    processed_thread_ids = set()
-    failed_instances = set()
 
     print("Iniciando o navegador Selenium em segundo plano...")
     options = webdriver.ChromeOptions()
@@ -199,58 +170,57 @@ if __name__ == "__main__":
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
     options.add_experimental_option('excludeSwitches', ['enable-logging'])
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
-    all_final_data = []
     try:
-        # ETAPA 1: SCRAPING
-        for user in usernames_to_scrape:
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    except Exception as e:
+        print(f"!!! Falha ao iniciar o ChromeDriver: {e}")
+        return 0
+
+    all_final_data = []
+    filtered_posts_count = 0
+    try:
+        all_posts_to_process = []
+        processed_thread_ids = set()
+        failed_instances = set()
+        
+        # <-- MUDANÇA: O loop de scraping agora itera sobre a lista de perfis
+        for profile in profiles_to_scan:
+            username = profile['name'] # Pega o nome do perfil do dicionário
             page_successfully_loaded = False
             for instance_url in nitter_instances:
-                if instance_url in failed_instances:
-                    print(f"\n-> Pulando instância já falha: {instance_url}")
-                    continue
+                if instance_url in failed_instances: continue
                 
-                page_load_success, posts_found_for_this_user = find_posts_on_profile_page(user, start_collecting_from, instance_url, driver)
+                # Usa o 'username' para fazer a busca
+                page_load_success, posts_found = find_posts_on_profile_page(username, start_collecting_from, instance_url, driver)
                 
                 if page_load_success:
-                    print(f"-> Sucesso no carregamento para '{user}' usando {instance_url}.")
-                    all_posts_to_process.extend(posts_found_for_this_user)
+                    all_posts_to_process.extend(posts_found)
                     page_successfully_loaded = True
                     break
                 else:
-                    print(f"-> Tentativa de carregamento falhou para '{user}' em {instance_url}. Adicionando à blacklist...")
                     failed_instances.add(instance_url)
             
             if not page_successfully_loaded:
-                 print(f"!!! ERRO GERAL: Nenhuma instância funcional encontrada para carregar a página do usuário '{user}'.")
+                print(f"!!! ERRO GERAL: Nenhuma instância funcional para '{username}'.")
 
-        # ETAPA 2: PROCESSAMENTO
         if all_posts_to_process:
-            print("\n" + "="*50)
-            print("INICIANDO PROCESSAMENTO DETALHADO DOS POSTS COLETADOS")
-            print("="*50)
-            
+            print("\n" + "="*50 + "\nINICIANDO PROCESSAMENTO DETALHADO\n" + "="*50)
             for post_data in all_posts_to_process:
                 base_instance_url = '/'.join(post_data["link"].split('/')[:3])
                 root_url, soup = get_thread_root_url_and_content(post_data["link"], driver, base_instance_url)
-
                 if not root_url or not soup: continue
                 match = re.search(r'/status/(\d+)', root_url)
                 if not match: continue
                 thread_id = match.group(1)
-
                 if thread_id in processed_thread_ids:
-                    print(f"  -> Thread ID {thread_id} já processada. Pulando.")
+                    print(f"   -> Thread ID {thread_id} já processada. Pulando.")
                     continue
-
-                print(f"  -> Processando nova thread com ID {thread_id}.")
-                # ATUALIZAÇÃO: Chama a nova função e usa a chave "content"
+                print(f"   -> Processando nova thread com ID {thread_id}.")
                 content_parts = extract_full_thread_content(soup, base_instance_url)
-
                 if content_parts:
                     post_data["link"] = root_url
-                    post_data["content"] = content_parts # Salva a nova estrutura de dados
+                    post_data["content"] = content_parts
                     all_final_data.append(post_data)
                     processed_thread_ids.add(thread_id)
                 time.sleep(random.uniform(1, 2))
@@ -261,132 +231,115 @@ if __name__ == "__main__":
     output_filename = "extracted_x_posts.json"
     with open(output_filename, 'w', encoding='utf-8') as f:
         json.dump(all_final_data, f, ensure_ascii=False, indent=4)
-    print(f"\nExtração concluída! {len(all_final_data)} posts/threads únicos salvos em '{output_filename}'.")
+    print(f"\nExtração concluída! {len(all_final_data)} posts salvos em '{output_filename}'.")
     
-    # ETAPA 3: ANÁLISE COM LLM
     if all_final_data:
         save_latest_timestamp(all_final_data)
-        print("\n" + "="*50)
-        print("INICIANDO A ANÁLISE COM A API DO GEMINI")
-        print("="*50)
-
+        print("\n" + "="*50 + "\nINICIANDO A ANÁLISE COM A API DO GEMINI\n" + "="*50)
         
         task_description = """
-**1. Your Role and Objective:**
-You are an expert analyst monitoring cryptocurrency projects for airdrop opportunities. Your task is to analyze the following social media post.
-Your goal is to determine if the post contains information relevant to an "airdrop hunter" monitoring this project.
+        **1. Your Role and Objective:**
+        You are a specialized AI assistant for an expert airdrop hunter. Your only task is to act as a personalized filter. In each request, you will receive my current "Project & Farming Status" and a "Social Media Post" from that project. Your goal is to determine if the post is relevant **TO ME**, based on my status. If there is no project context and/or my airdrop farming status, consider any relevant signal related to the "Airdrop" theme as a "yes" answer.
 
-**2. Core Rules:**
-- Analyze the post and answer the question: "If I were farming an airdrop from this project, would this post be relevant to me?"
-- **Your entire response MUST be a single word: 'yes' or 'no'. Do not include any other text, reasoning, or explanation.**
+        **2. The Core Question:**
+        "Does this post contain new, actionable information for my specific farming strategy, OR does it announce critical, universal airdrop logistics?"
 
-**3. Relevance Criteria (Triggers for "yes"):**
-- Direct mention of "airdrop", rewards, token distribution, or "snapshot".
-- Gamified campaigns: mentions of "points", "badges", NFTs for participation, or tasks on platforms like Galxe, Zealy, Layer3.
-- Testnet phases: announcements of new testnets where participation might be rewarded.
-- Funding news: announcements of new investment rounds (fundraising), as these often lead to future community rewards.
+        **3. High-Relevance Triggers (Always answer 'yes'):**
+        - **Universal Airdrop Logistics:** The post mentions critical, general information like: a "claim" process, a wallet "checker", official "snapshot" dates, "TGE" (Token Generation Event), token "listing" dates, or new, universal "eligibility" tasks that apply to everyone.
+        - **Strategy-Specific News:** The post announces updates, new tasks, or information **directly related** to the specific network, platform, or campaign mentioned in my "Project & Farming Status".
 
-**4. Irrelevance Criteria (Triggers for "no"):**
-- General market discussions or price speculation.
-- Standard partnerships or technical updates without direct user rewards.
-- Generic community engagement posts ("GM", "happy Monday", contests for swag).
+        **4. Irrelevance Triggers (Always answer 'no'):**
+        - **Different Strategy Announcements:** This is a critical filter. If the post announces a new campaign, integration, or opportunity on a **different network or platform** than the one specified in my "Farming Status", it is considered noise and is NOT relevant.
+        - **General Noise:** General market discussions, price speculation, standard technical updates without direct user rewards, or generic community engagement posts ("GM", "happy Monday").
 
-**5. Training Examples (Few-Shot Learning):**
-
---- START EXAMPLE 1 ---
-Post Input: "Big news! We just closed our Series B funding round with major VCs. Thanks to our amazing community for the support as we build the future of DeFi."
-Final Answer: yes
---- END EXAMPLE 1 ---
-
---- START EXAMPLE 2 ---
-Post Input: "Don't forget to claim your 'Early Supporter Badge' on Galxe! This recognizes everyone who joined us in Phase 1."
-Final Answer: yes
---- END EXAMPLE 2 ---
-
---- START EXAMPLE 3 ---
-Post Input: "Our dev team just pushed update 1.4.2, fixing minor UI bugs on the platform. Great work team!"
-Final Answer: no
---- END EXAMPLE 3 ---
-"""
+        **5. Example Logic to Follow:**
+        - If my status is "Farming on Bob Network" and the post says "We are now live on Solana!", your answer is 'no'.
+        - If my status is "Farming on Bob Network" and the post says "New quest for all Bob Network users!", your answer is 'yes'.
+        - If my status is "I have 100,000 Lux points" and the post says "The snapshot for Lux points has been taken", your answer is 'yes'.
+        """
+        
+        # <-- MUDANÇA: Cria um mapa de 'username' -> 'contexto' para busca rápida
+        profile_context_map = {p['name']: p['context'] for p in profiles_to_scan}
 
         filtered_posts = []
-    
-        # --- NOVO: LÓGICA DE CONTROLE DE FREQUÊNCIA (THROTTLING) ---
-        # Usamos 9 como limite para ter uma margem de segurança.
         REQUEST_LIMIT_PER_MINUTE = 9 
         request_count = 0
         minute_start_time = time.time()
-        # --- FIM DA NOVA LÓGICA ---
 
         for i, post in enumerate(all_final_data):
-            # --- NOVO: VERIFICAÇÃO DO LIMITE ANTES DE CADA CHAMADA ---
             if request_count >= REQUEST_LIMIT_PER_MINUTE:
                 elapsed_time = time.time() - minute_start_time
                 if elapsed_time < 60:
                     wait_time = 60 - elapsed_time
-                    print("\n" + "-"*20)
-                    print(f"!!! LIMITE DE RPM ATINGIDO. AGUARDANDO {wait_time:.1f} SEGUNDOS... !!!")
-                    print("-" * 20 + "\n")
+                    print(f"\n!!! LIMITE DE RPM ATINGIDO. AGUARDANDO {wait_time:.1f} SEGUNDOS. !!!\n")
                     time.sleep(wait_time)
-                
-                # Zera o contador para o novo minuto
                 request_count = 0
                 minute_start_time = time.time()
-            # --- FIM DA VERIFICAÇÃO ---
-
+            
             full_text = "\n\n---\n\n".join([part['text'] for part in post.get('content', []) if part.get('text')])
-            
-            if not full_text.strip():
-                continue
+            if not full_text.strip(): continue
 
-            print(f"\n({i+1}/{len(all_final_data)}) Analisando post: {post.get('link', 'Link não disponível')}")
+            print(f"\n({i+1}/{len(all_final_data)}) Analisando post de '{post['username']}': {post.get('link', 'N/A')}")
             
-            if is_post_related(full_text, task_description):
+            # <-- MUDANÇA: Pega o contexto específico para este post usando o mapa
+            current_context = profile_context_map.get(post['username'], "Nenhum contexto específico foi fornecido.")
+            
+            # <-- MUDANÇA: Passa o contexto para a função de análise do Gemini
+            if is_post_related(full_text, task_description, current_context):
                 print("   > Veredito: Relevante. Adicionando ao resultado final.")
                 filtered_posts.append(post)
             else:
                 print("   > Veredito: Não relevante. Ignorando.")
-            
-            # --- NOVO: INCREMENTA O CONTADOR APÓS CADA CHAMADA BEM-SUCEDIDA ---
             request_count += 1
-            # --- FIM DO INCREMENTO ---
-
-        # ... (o resto do seu código para salvar o JSON e enviar para o Notion continua igual) ...
-
+        
         filtered_output_filename = "filtered_posts.json"
         with open(filtered_output_filename, 'w', encoding='utf-8') as f:
             json.dump(filtered_posts, f, ensure_ascii=False, indent=4)
-        
-        print("\n" + "="*50)
-        print(f"ANÁLISE CONCLUÍDA!")
-        print(f"{len(filtered_posts)} posts relevantes foram salvos em '{filtered_output_filename}'.")
-        print("="*50)
+        print("\n" + "="*50 + f"\nANÁLISE CONCLUÍDA! {len(filtered_posts)} posts relevantes salvos.\n" + "="*50)
 
         if filtered_posts:
             print("\nINICIANDO ENVIO PARA O NOTION...")
             for post in filtered_posts:
                 append_post_to_page(post)
-                # Pausa para respeitar os limites da API do Notion (3 req/s)
                 time.sleep(0.5)
             print("ENVIO PARA O NOTION CONCLUÍDO!")
+            filtered_posts_count = len(filtered_posts)
         else:
             print("\nNenhum post relevante para enviar ao Notion.")
-
-            total_posts_found = len(all_final_data)
-            timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
-            notification_message = (
-                f"Relatório de Execução ({timestamp}):\n"
-                f"Total de tweets que batem com a data: {total_posts_found} \n"
-                f"Nenhum desses posts se enquadram no assunto."
-            )
-            send_notification_to_notion(notification_message)
-
+            filtered_posts_count = 0 # Garante que a variável exista
+        
+        timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+        message = (
+            f"Relatório ({timestamp}):\n"
+            f"Tweets encontrados desde a última execução: {len(all_final_data)}\n"
+            f"Tweets relevantes enviados ao Notion: {filtered_posts_count}"
+        )
+        send_notification_to_notion(message)
     else:
         print("\nNenhum post novo coletado, etapa de análise pulada.")
-        total_posts_found = len(all_final_data)
-        timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
-        notification_message = (
-            f"Relatório de Execução ({timestamp}):\n"
-            f"Nenhum tweet novo foi encontrado. \n"
-        )
-        send_notification_to_notion(notification_message)
+    
+    return filtered_posts_count
+
+def run_with_logging_and_state(profiles_to_scan, run_type="manual"):
+    with open(LOG_FILE, 'w', encoding='utf-8') as log_f:
+        with redirect_stdout(log_f):
+            print(f"--- Iniciando execução {'automática' if run_type == 'scheduled' else 'manual'} em {datetime.now()} ---")
+            posts_sent = run_full_analysis(profiles_to_scan)
+            config = load_config()
+            config[f"last_{run_type}_run_timestamp"] = datetime.now().isoformat()
+            save_config(config)
+            print(f"--- Execução {'automática' if run_type == 'scheduled' else 'manual'} finalizada em {datetime.now()} ---")
+    return posts_sent
+
+# --- Bloco de Execução para o Agendador de Tarefas ---
+if __name__ == "__main__":
+    # <-- MUDANÇA: O agendador agora também usa a nova estrutura
+    try:
+        profiles = load_profiles() # Carrega a lista de dicionários do profiles.json
+    except FileNotFoundError:
+        print("!!! ERRO: Arquivo 'profiles.json' não encontrado.")
+        profiles = []
+
+    if profiles:
+        # A função `run_with_logging_and_state` já espera a lista de dicionários
+        run_with_logging_and_state(profiles, run_type="scheduled")
